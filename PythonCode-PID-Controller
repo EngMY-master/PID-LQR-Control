@@ -1,0 +1,69 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import odeint
+
+# System parameters
+m = 1.0      # Mass [kg]
+c = 0.5      # Damping coefficient [N·s/m]
+k = 20.0     # Stiffness [N/m]
+
+# Desired reference (setpoint)
+x_ref = 0.0
+
+# PID controller parameters (tuning required)
+Kp = 50.0
+Ki = 10.0
+Kd = 5.0
+
+# Simulation time
+t = np.linspace(0, 10, 1000)
+dt = t[1] - t[0]  # Compute dt from the time vector
+
+# Define the ODE system for a mass-spring-damper with PID control.
+def msd_system(state, t, m, c, k, Kp, Ki, Kd, x_ref, dt):
+    """
+    state: [x, x_dot, integral_error, previous_error]
+    t: current time (scalar)
+    dt: time step (for derivative approximation)
+    """
+    # Unpack state variables
+    x, x_dot, integral_error, previous_error = state
+
+    # Compute the control error (the deviation of x from the reference)
+    error = x_ref - x
+
+    # Compute derivative of the error (using dt passed as parameter)
+    derivative_error = (error - previous_error) / dt
+
+    # PID control force
+    control_force = Kp * error + Ki * integral_error + Kd * derivative_error
+
+    # System dynamics (second-order ODE written as two first-order ODEs)
+    x_ddot = (control_force - c * x_dot - k * x) / m
+
+    # Update the integral error using Euler integration (approximate)
+    d_integral_error = error
+
+    # The derivative term for the next step is the current error.
+    d_previous_error = error
+
+    # Return the derivatives of the state vector.
+    return [x_dot, x_ddot, d_integral_error, d_previous_error]
+
+# Initial conditions: [displacement, velocity, integral_error, previous_error]
+state0 = [1.0, 0.0, 0.0, 1.0]
+
+# ODE Integration with the additional dt parameter
+sol = odeint(msd_system, state0, t, args=(m, c, k, Kp, Ki, Kd, x_ref, dt))
+x = sol[:, 0]
+
+# Plot the controlled response
+plt.figure(figsize=(10, 4))
+plt.plot(t, x, label='Displacement with PID Control')
+plt.axhline(0, color='grey', linestyle='--')
+plt.xlabel('Time (s)')
+plt.ylabel('Displacement (m)')
+plt.title('1DOF Mass-Spring-Damper with PID Control')
+plt.legend()
+plt.grid(True)
+plt.show()
