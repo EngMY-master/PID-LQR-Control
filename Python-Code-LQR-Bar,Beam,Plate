@@ -1,0 +1,267 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import control
+from scipy.linalg import block_diag
+
+# ============================================================
+# 1. Distributed System A: 1D Bar (Axial Vibration) with LQR Control
+# ============================================================
+def controlled_bar():
+    # Geometry & Material Properties
+    L = 10.0            # Total length (m)
+    num_elem = 10       # Number of finite elements
+    num_nodes = num_elem + 1  # Number of nodes
+    A_cross = 1.0       # Cross-sectional area (m^2)
+    E = 210e9           # Young's modulus (Pa)
+    rho = 7850          # Density (kg/m^3)
+    Le = L / num_elem   # Element length
+
+    # Element matrices (axial/truss element)
+    ke = (E * A_cross / Le) * np.array([[1, -1],
+                                        [-1, 1]])
+    me = (rho * A_cross * Le / 6.0) * np.array([[2, 1],
+                                                [1, 2]])
+    # Global assembly
+    K_global = np.zeros((num_nodes, num_nodes))
+    M_global = np.zeros((num_nodes, num_nodes))
+    for e in range(num_elem):
+        idx = [e, e+1]
+        K_global[np.ix_(idx, idx)] += ke
+        M_global[np.ix_(idx, idx)] += me
+
+    # Apply boundary condition: fix node 0 (zero displacement)
+    # Remove the first DOF.
+    K_red = K_global[1:, 1:]
+    M_red = M_global[1:, 1:]
+    n_dof = K_red.shape[0]
+
+    # Form state-space matrices.
+    # State: z = [x; x_dot] with x ∈ ℝ^(n_dof)
+    I_n = np.eye(n_dof)
+    M_inv = np.linalg.inv(M_red)
+    A_top = np.hstack((np.zeros((n_dof, n_dof)), I_n))
+    A_bottom = np.hstack((-M_inv @ K_red, np.zeros((n_dof, n_dof))))
+    A_bar = np.vstack((A_top, A_bottom))
+    # Assume actuator applies a force at the (reduced) last node:
+    B_vec = np.zeros((n_dof, 1))
+    B_vec[-1, 0] = 1.0
+    B_bar = np.vstack((np.zeros((n_dof, 1)), M_inv @ B_vec))
+
+    # LQR controller design
+    Q = np.eye(2 * n_dof)
+    R = np.array([[1]])
+    K_lqr, _, _ = control.lqr(A_bar, B_bar, Q, R)
+
+    # Closed-loop system:  z_dot = [A_bar - B_bar*K_lqr] z.
+    A_cl = A_bar - B_bar @ K_lqr
+    sys_bar = control.ss(A_cl, B_bar, np.eye(2 * n_dof), np.zeros((2 * n_dof, 1)))
+
+    # Simulation parameters and initial condition.
+    # (Note: frequencies here are very high; we use a short simulation time.)
+    t = np.linspace(0, 1e-3, 500)
+    # Choose an initial displacement distribution (e.g., a small ramp along the bar).
+    x0 = np.linspace(0, 0.001, n_dof)
+    z0 = np.concatenate((x0, np.zeros(n_dof)))
+
+    # Simulate the closed-loop response.
+    T, y, x_out = control.forced_response(sys_bar, T=t, U=0*t, X0=z0, return_x=True)
+
+    # Plot displacements at selected nodes.
+    plt.figure(figsize=(8, 4))
+    for idx in [0, n_dof//2, n_dof - 1]:
+        plt.plot(T, x_out[idx, :], label=f'Node {idx+1}')
+    plt.xlabel('Time (s)')
+    plt.ylabel('Displacement (m)')
+    plt.title('Controlled 1D Bar (Axial) Response')
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+
+# ============================================================
+# 2. Distributed System B: Euler–Bernoulli Beam (Bending) with LQR Control
+# ============================================================
+def controlled_beam():
+    # Geometry & Material Properties for the beam
+    L = 10.0            # Beam length (m)
+    num_elem = 10       # Number of beam elements
+    num_nodes = num_elem + 1
+    E = 210e9           # Young's modulus (Pa)
+    I = 1e-4            # Moment of inertia (m^4)
+    A_cross = 0.01      # Cross-sectional area (m^2)
+    rho = 7850          # Density (kg/m^3)
+    Le = L / num_elem
+
+    # Each node has 2 DOF: transverse displacement and rotation.
+    dof_per_node = 2
+    total_dof = num_nodes * dof_per_node
+
+    # Element matrices for an Euler–Bernoulli beam element (4×4).
+    Ke = (E * I / (Le**3)) * np.array([[12,        6*Le,    -12,         6*Le],
+                                       [6*Le, 4*Le**2,   -6*Le,   2*Le**2],
+                                       [-12,      -6*Le,    12,        -6*Le],
+                                       [6*Le, 2*Le**2,  -6*Le,   4*Le**2]])
+    Me = (rho * A_cross * Le / 420) * np.array([[156,   22*Le,   54,   -13*Le],
+                                                [22*Le,  4*Le**2, 13*Le, -3*Le**2],
+                                                [54,    13*Le,   156,   -22*Le],
+                                                [-13*Le, -3*Le**2, -22*Le,  4*Le**2]])
+    # Global assembly for beam
+    K_global = np.zeros((total_dof, total_dof))
+    M_global = np.zeros((total_dof, total_dof))
+    for e in range(num_elem):
+        dof_indices = [2*e, 2*e+1, 2*(e+1), 2*(e+1)+1]
+        for i in range(4):
+            for j in range(4):
+                K_global[dof_indices[i], dof_indices[j]] += Ke[i, j]
+                M_global[dof_indices[i], dof_indices[j]] += Me[i, j]
+
+    # Apply boundary conditions: Clamped at the left end (node 0: both displacement & rotation = 0).
+    # Remove DOFs 0 and 1.
+    free_dofs = np.arange(total_dof)[2:]
+    K_red = K_global[np.ix_(free_dofs, free_dofs)]
+    M_red = M_global[np.ix_(free_dofs, free_dofs)]
+    n_free = K_red.shape[0]
+
+    # Build state-space form.
+    I_n = np.eye(n_free)
+    M_inv = np.linalg.inv(M_red)
+    A_top = np.hstack((np.zeros((n_free, n_free)), I_n))
+    A_bottom = np.hstack((-M_inv @ K_red, np.zeros((n_free, n_free))))
+    A_beam = np.vstack((A_top, A_bottom))
+    # Assume control force is applied at the free end.
+    # For a beam node, the first DOF is displacement.
+    B_vec = np.zeros((n_free, 1))
+    B_vec[-2, 0] = 1.0  # apply force to the displacement DOF of the last free node
+    B_beam = np.vstack((np.zeros((n_free, 1)), M_inv @ B_vec))
+
+    Q = np.eye(2 * n_free)
+    R = np.array([[1]])
+    K_lqr, _, _ = control.lqr(A_beam, B_beam, Q, R)
+
+    A_cl = A_beam - B_beam @ K_lqr
+    sys_beam = control.ss(A_cl, B_beam, np.eye(2 * n_free), np.zeros((2 * n_free, 1)))
+
+    # Simulation parameters
+    t = np.linspace(0, 0.05, 500)
+    # Initial condition: assign a small transverse displacement to the free DOFs.
+    x0 = np.zeros(n_free)
+    # Set the displacement DOFs (every other DOF, starting with 0) to a small ramp.
+    x0[::2] = 1e-3 * np.linspace(0, 1, n_free // 2 + (n_free % 2))
+    z0 = np.concatenate((x0, np.zeros(n_free)))
+
+    T, y, x_out = control.forced_response(sys_beam, T=t, U=0*t, X0=z0, return_x=True)
+    # Extract transverse displacement components (every 2nd state from the first n_free states).
+    disp = x_out[::2, :]
+
+    plt.figure(figsize=(8, 4))
+    plt.plot(T, disp[0, :], label='Leftmost free node')
+    plt.plot(T, disp[-1, :], label='Rightmost free node')
+    plt.xlabel('Time (s)')
+    plt.ylabel('Transverse Displacement (m)')
+    plt.title('Controlled Beam Response (Transverse Vibration)')
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+
+# ============================================================
+# 3. Distributed System C: Plate (Membrane) via Finite Difference with LQR Control
+# ============================================================
+def controlled_plate():
+    # Plate (membrane) parameters
+    Lx = 1.0    # length in x-direction (m)
+    Ly = 1.0    # length in y-direction (m)
+    NX = 11     # grid points in x-direction
+    NY = 11     # grid points in y-direction
+    dx = Lx / (NX - 1)
+    dy = Ly / (NY - 1)
+    N = NX * NY
+
+    # Lumped mass: assume uniform density (kg/m^2)
+    rho = 1.0
+    m_node = rho * dx * dy
+
+    # Build the stiffness matrix K for the membrane using a 5-point finite difference
+    # and the (lumped) mass matrix M.
+    K = np.zeros((N, N))
+    M = np.zeros((N, N))
+    def idx(i, j):
+        return i * NY + j
+
+    for i in range(NX):
+        for j in range(NY):
+            index = idx(i, j)
+            M[index, index] = m_node
+            # Apply Dirichlet BC on boundary nodes (fixed)
+            if i == 0 or i == NX - 1 or j == 0 or j == NY - 1:
+                K[index, index] = 1e20
+            else:
+                K[index, index] = 2 * (1 / dx**2 + 1 / dy**2)
+                K[index, idx(i+1, j)] = -1 / dx**2
+                K[index, idx(i-1, j)] = -1 / dx**2
+                K[index, idx(i, j+1)] = -1 / dy**2
+                K[index, idx(i, j-1)] = -1 / dy**2
+
+    # Remove boundary nodes (since they are fixed) to define the controlled interior.
+    interior = []
+    for i in range(1, NX - 1):
+        for j in range(1, NY - 1):
+            interior.append(idx(i, j))
+    interior = np.array(interior)
+    K_red = K[np.ix_(interior, interior)]
+    M_red = M[np.ix_(interior, interior)]
+    n_plate = K_red.shape[0]
+
+    # Build state-space representation: state z = [w; w_dot] where w are the nodal displacements.
+    I_n = np.eye(n_plate)
+    M_inv = np.linalg.inv(M_red)
+    A_top = np.hstack((np.zeros((n_plate, n_plate)), I_n))
+    A_bottom = np.hstack((-M_inv @ K_red, np.zeros((n_plate, n_plate))))
+    A_plate = np.vstack((A_top, A_bottom))
+    # Place an actuator at the center of the interior.
+    center_index = n_plate // 2
+    B_plate_vec = np.zeros((n_plate, 1))
+    B_plate_vec[center_index, 0] = 1.0
+    B_plate = np.vstack((np.zeros((n_plate, 1)), M_inv @ B_plate_vec))
+
+    # LQR design
+    Q = np.eye(2 * n_plate)
+    R = np.array([[1]])
+    K_lqr, _, _ = control.lqr(A_plate, B_plate, Q, R)
+    A_cl = A_plate - B_plate @ K_lqr
+    sys_plate = control.ss(A_cl, B_plate, np.eye(2 * n_plate), np.zeros((2 * n_plate, 1)))
+
+    t = np.linspace(0, 0.1, 500)
+    # Initial condition: a small random displacement at interior nodes.
+    x0 = 1e-3 * np.random.randn(n_plate)
+    z0 = np.concatenate((x0, np.zeros(n_plate)))
+    T, y, x_out = control.forced_response(sys_plate, T=t, U=0*t, X0=z0, return_x=True)
+
+    # For visualization, reshape the final displacement vector into a (NX-2)×(NY-2) grid.
+    disp_final = x_out[:n_plate, -1]
+    disp_grid = disp_final.reshape((NX - 2, NY - 2))
+
+    plt.figure(figsize=(6, 5))
+    cp = plt.contourf(np.linspace(0, Lx, NX - 2), np.linspace(0, Ly, NY - 2), disp_grid, levels=50, cmap='viridis')
+    plt.colorbar(cp)
+    plt.title('Controlled Plate (Membrane) Final Displacement')
+    plt.xlabel('x (m)')
+    plt.ylabel('y (m)')
+    plt.tight_layout()
+    plt.show()
+
+# ============================================================
+# Main Function to Run All Controlled Distributed Systems
+# ============================================================
+def main():
+    print("=== Controlled 1D Bar (Axial) ===")
+    controlled_bar()
+    print("=== Controlled Beam (Bending) ===")
+    controlled_beam()
+    print("=== Controlled Plate (Membrane) ===")
+    controlled_plate()
+
+if __name__ == '__main__':
+    main()
