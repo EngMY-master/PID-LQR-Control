@@ -1,0 +1,62 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import control
+
+# Define a simple 2-DOF system: masses, damping, stiffness
+m1, m2 = 1.0, 1.0
+k1, k2, k3 = 20.0, 15.0, 20.0
+c1, c2, c3 = 1.0, 0.5, 1.0
+
+M = np.array([[m1, 0],
+              [0, m2]])
+C = np.array([[c1 + c2, -c2],
+              [-c2,      c2 + c3]])
+K = np.array([[k1 + k2, -k2],
+              [-k2,      k2 + k3]])
+
+# Define state-space matrices.
+# State vector: z = [x1, x2, x1_dot, x2_dot]
+n = 2
+A_upper = np.hstack((np.zeros((n, n)), np.eye(n)))
+A_lower_first = -np.linalg.inv(M) @ K
+A_lower_second = -np.linalg.inv(M) @ C
+A_lower = np.hstack((A_lower_first, A_lower_second))
+A = np.vstack((A_upper, A_lower))
+B = np.vstack((np.zeros((n, 1)), np.linalg.inv(M) @ np.array([[1.0], [0.0]])))  # force applied to mass 1
+
+# LQR design: choose weighting matrices
+Q = np.eye(4)
+R = np.array([[0.1]])
+
+# Compute LQR gain matrix using the control library.
+K_lqr, S, E = control.lqr(A, B, Q, R)
+print("LQR Gain Matrix K:", K_lqr)
+
+# Closed-loop system: u = -K_lqr z  =>  z_dot = (A - B*K_lqr)z
+A_cl = A - B @ K_lqr
+# Define a state-space system with output equal to the full state.
+sys_cl = control.StateSpace(A_cl, B, np.eye(4), np.zeros((4, 1)))
+
+# Simulation parameters
+z0 = [0.5, -0.5, 0.0, 0.0]  # initial condition (state vector)
+t_span = np.linspace(0, 10, 1000)
+U = np.zeros_like(t_span)  # no external forcing
+
+# Simulate the closed-loop system.
+# Use return_x=True to get the state trajectory.
+T, y, x_out = control.forced_response(sys_cl, T=t_span, U=U, X0=z0, return_x=True)
+
+# Extract displacements: in our state vector, the first two states are displacements
+x1 = x_out[0, :]  # displacement of mass 1
+x2 = x_out[1, :]  # displacement of mass 2
+
+# Plot the displacement responses
+plt.figure(figsize=(10, 4))
+plt.plot(T, x1, label='Displacement x1 with LQR')
+plt.plot(T, x2, label='Displacement x2 with LQR')
+plt.xlabel('Time (s)')
+plt.ylabel('Displacement (m)')
+plt.title('2DOF Mass System Controlled by LQR')
+plt.legend()
+plt.grid(True)
+plt.show()
